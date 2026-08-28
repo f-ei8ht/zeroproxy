@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 export type Route = {
   pattern: string;
   method?: string;
-  upstream?: string | string[];
+  upstream?: string[];
   static?: string;
   index?: string;
 };

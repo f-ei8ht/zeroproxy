@@ -1,0 +1,11 @@
+{
+  "name": "zeroproxy",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^7"
+  }
+}

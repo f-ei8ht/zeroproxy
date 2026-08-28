@@ -104,7 +104,7 @@ export function serveStatic(req: Request, staticPath: string, indexFile?: string
   if (baseStat.isDirectory()) {
     const relative = subpath.replace(/^\/+/, "");
     const candidate = resolve(base, relative);
-    if (!candidate.startsWith(base + sep)) return notFound();
+    if (candidate !== base && !candidate.startsWith(base + sep)) return notFound();
     let target = candidate;
     let stat = statSync(target, { throwIfNoEntry: false });
     if (stat?.isDirectory()) {

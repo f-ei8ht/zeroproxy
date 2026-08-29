@@ -59,12 +59,22 @@ describe("shouldCompress", () => {
   });
 
   test("is false for image content", () => {
-    const res = new Response("x", { headers: { "content-type": "image/png" } });
+    const res = new Response("x".repeat(500), { headers: { "content-type": "image/png" } });
     expect(shouldCompress("gzip", res)).toBe(false);
   });
 
-  test("is true for compressible text", () => {
-    expect(shouldCompress("gzip", new Response("x"))).toBe(true);
+  test("is false for video and font content", () => {
+    expect(shouldCompress("gzip", new Response("x".repeat(500), { headers: { "content-type": "video/mp4" } }))).toBe(false);
+    expect(shouldCompress("gzip", new Response("x".repeat(500), { headers: { "content-type": "font/woff2" } }))).toBe(false);
+  });
+
+  test("is false for tiny responses", () => {
+    const res = new Response("hello", { headers: { "content-length": "5" } });
+    expect(shouldCompress("gzip", res)).toBe(false);
+  });
+
+  test("is true for compressible text above the minimum size", () => {
+    expect(shouldCompress("gzip", new Response("x".repeat(1000)))).toBe(true);
   });
 });
 

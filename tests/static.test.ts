@@ -105,4 +105,34 @@ describe("serveStatic", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("A");
   });
+
+  test("returns 304 on If-Modified-Since when unmodified", async () => {
+    const first = serveStatic(new Request("http://x/hello.txt"), dir, undefined, "hello.txt");
+    const lastModified = first.headers.get("last-modified")!;
+    expect(lastModified).toBeTruthy();
+    const req = new Request("http://x/hello.txt", { headers: { "if-modified-since": lastModified } });
+    expect(serveStatic(req, dir, undefined, "hello.txt").status).toBe(304);
+  });
+
+  test("sets the last-modified header", async () => {
+    const res = serveStatic(new Request("http://x/hello.txt"), dir, undefined, "hello.txt");
+    expect(res.headers.get("last-modified")).toBeTruthy();
+  });
+
+  test("blocks dotfiles", () => {
+    writeFileSync(join(dir, ".hidden"), "secret");
+    const req = new Request("http://x/");
+    expect(serveStatic(req, dir, undefined, ".hidden").status).toBe(404);
+  });
+
+  test("applies a per-route cache-control header", () => {
+    const res = serveStatic(new Request("http://x/hello.txt"), dir, undefined, "hello.txt", undefined, "public, max-age=3600");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
+  });
+
+  test("lists a parent link in a subdirectory listing", async () => {
+    const res = serveStatic(new Request("http://x/"), listingDir, undefined, "sub");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("../");
+  });
 });

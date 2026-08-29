@@ -1,7 +1,7 @@
 BUN ?= bun
 BIN := zeroproxy
 
-.PHONY: build test proof reproduce clean all
+.PHONY: build test typecheck proof reproduce bench clean all
 
 all: build
 
@@ -13,6 +13,9 @@ test:
 
 typecheck:
 	$(BUN)x tsc --noEmit
+
+bench:
+	$(BUN) run bench/bench.ts
 
 proof:
 	$(BUN) pm ls > deps-proof.txt

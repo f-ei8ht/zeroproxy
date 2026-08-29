@@ -13,6 +13,7 @@
     "start": "bun run src/index.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
+    "bench": "bun run bench/bench.ts",
     "proof": "bun pm ls > deps-proof.txt",
     "reproduce": "bun build ./src/index.ts --compile --outfile zeroproxy-build-1 && bun build ./src/index.ts --compile --outfile zeroproxy-build-2 && sha256sum zeroproxy-build-1 zeroproxy-build-2 > BUILD_HASHES.txt && cmp zeroproxy-build-1 zeroproxy-build-2 && echo BYTE-IDENTICAL",
     "clean": "rm -f zeroproxy zeroproxy-build-1 zeroproxy-build-2 BUILD_HASHES.txt"

@@ -11,6 +11,9 @@ zeroproxy
 zeroproxy-build-1
 zeroproxy-build-2
 
+# benchmark temp config
+.bench-config.json
+
 # code coverage
 coverage
 *.lcov

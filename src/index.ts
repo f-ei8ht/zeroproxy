@@ -1,14 +1,18 @@
+import { randomUUID } from "node:crypto";
 import { styleText } from "node:util";
 import { watch } from "node:fs";
 import type { Server, ServerWebSocket } from "bun";
 import { loadConfig } from "./config";
 import type { Config } from "./config";
-import { compileRoutes, matchRoute } from "./router";
+import { allowedMethods, compileRoutes, matchRoute } from "./router";
 import type { CompiledRoute, Match } from "./router";
 import { pickEncoding, compressBody, shouldCompress } from "./compress";
 import { serveStatic } from "./static";
-import { proxyRequest, roundRobin } from "./proxy";
-import type { Balancer } from "./proxy";
+import { proxyRequest } from "./proxy";
+import { roundRobin } from "./proxy/balancer";
+import type { Balancer } from "./proxy/balancer";
+import { healthChecker } from "./proxy/health";
+import type { HealthChecker } from "./proxy/health";
 import { isWebSocketRequest, toSendable, upstreamSocketUrl } from "./ws";
 import type { WsClient, WsData } from "./ws";
 
@@ -18,16 +22,18 @@ type Runtime = {
   config: Config;
   compiled: CompiledRoute[];
   picks: Map<string, Balancer>;
+  health?: HealthChecker;
 };
 
 const START = Date.now();
 let requests = 0;
 let errors = 0;
 
-function log(req: Request, status: number): void {
+function log(req: Request, status: number, started: number): void {
   const color = status < 400 ? "green" : status < 500 ? "yellow" : "red";
   const time = styleText("gray", new Date().toISOString());
-  console.log(`${time} ${req.method} ${new URL(req.url).pathname} ${styleText(color, String(status))}`);
+  const ms = styleText("gray", `${Date.now() - started}ms`);
+  console.log(`${time} ${req.method} ${new URL(req.url).pathname} ${styleText(color, String(status))} ${ms}`);
 }
 
 function healthz(): Response {
@@ -36,12 +42,20 @@ function healthz(): Response {
 }
 
 function applyConfig(runtime: Runtime, config: Config): void {
+  runtime.health?.stop();
   runtime.config = config;
   runtime.compiled = compileRoutes(config.routes);
   runtime.picks.clear();
+  const balancers: Balancer[] = [];
   for (const route of config.routes) {
-    if (route.upstream) runtime.picks.set(route.pattern, roundRobin(route.upstream));
+    if (route.upstream) {
+      const balancer = roundRobin(route.upstream);
+      runtime.picks.set(route.pattern, balancer);
+      balancers.push(balancer);
+    }
   }
+  runtime.health = healthChecker(balancers, config.healthCheck);
+  runtime.health.start();
 }
 
 async function handle(req: Request, runtime: Runtime, match: Match | undefined, url: URL): Promise<Response> {
@@ -49,26 +63,45 @@ async function handle(req: Request, runtime: Runtime, match: Match | undefined, 
   if (url.pathname === "/healthz") {
     response = healthz();
   } else if (!match) {
-    response = new Response("Not Found", { status: 404, statusText: "Not Found" });
+    const allowed = allowedMethods(runtime.compiled, url.pathname);
+    if (allowed.length > 0) {
+      response = new Response("Method Not Allowed", {
+        status: 405,
+        statusText: "Method Not Allowed",
+        headers: { allow: allowed.join(", ") },
+      });
+    } else {
+      response = new Response("Not Found", { status: 404, statusText: "Not Found" });
+    }
   } else if (match.route.upstream) {
-    response = await proxyRequest(req, runtime.picks.get(match.route.pattern)!);
+    response = await proxyRequest(req, runtime.picks.get(match.route.pattern)!, runtime.config.retryBodyLimitBytes);
   } else if (match.route.static) {
     const subpath = match.params["0"] ?? url.pathname;
-    response = serveStatic(req, match.route.static, match.route.index, subpath, match.route.fallback);
+    response = serveStatic(
+      req,
+      match.route.static,
+      match.route.index,
+      subpath,
+      match.route.fallback,
+      match.route.cacheControl,
+    );
   } else {
     response = new Response("Not Found", { status: 404, statusText: "Not Found" });
   }
 
   if (runtime.config.compression) {
     const encoding = pickEncoding(req.headers.get("accept-encoding"));
+    const headers = new Headers(response.headers);
+    headers.append("vary", "accept-encoding");
     if (shouldCompress(encoding, response)) {
-      const headers = new Headers(response.headers);
       headers.delete("content-length");
       headers.set("content-encoding", encoding);
       response = new Response(compressBody(response.body!, encoding), {
         status: response.status,
         headers,
       });
+    } else {
+      response = new Response(response.body, { status: response.status, headers });
     }
   }
   return response;
@@ -82,23 +115,32 @@ async function main(): Promise<void> {
   const server: Server<WsData> = Bun.serve({
     port: runtime.config.port,
     hostname: runtime.config.host,
+    tls: runtime.config.tls
+      ? {
+          certFile: runtime.config.tls.cert,
+          keyFile: runtime.config.tls.key,
+        }
+      : undefined,
     async fetch(req, srv) {
       const url = new URL(req.url);
       const match = matchRoute(runtime.compiled, req.method, url.pathname);
       if (isWebSocketRequest(req) && match?.route.upstream && match.route.ws) {
+        const balancer = runtime.picks.get(match.route.pattern)!;
+        const target = balancer.pick();
         const accepted = srv.upgrade(req, {
-          data: { target: upstreamSocketUrl(match.route.upstream[0]!, req), buffer: [] },
+          data: { target: upstreamSocketUrl(target, req), buffer: [] },
         });
         return accepted ? undefined : new Response("Bad Request", { status: 400 });
       }
+      const started = Date.now();
       try {
         const res = await handle(req, runtime, match, url);
         requests++;
-        log(req, res.status);
+        log(req, res.status, started);
         return res;
       } catch {
         errors++;
-        log(req, 500);
+        log(req, 500, started);
         return new Response("Internal Server Error", { status: 500 });
       }
     },
@@ -126,7 +168,8 @@ async function main(): Promise<void> {
     },
   });
 
-  console.log(styleText("green", `zeroproxy listening on http://${runtime.config.host}:${server.port}`));
+  const scheme = runtime.config.tls ? "https" : "http";
+  console.log(styleText("green", `zeroproxy listening on ${scheme}://${runtime.config.host}:${server.port}`));
 
   if (source) {
     watch(source, async () => {
@@ -146,6 +189,7 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (shuttingDown) return;
     shuttingDown = true;
+    runtime.health?.stop();
     console.log(styleText("yellow", "shutting down, draining in-flight requests"));
     server.stop();
     setTimeout(() => process.exit(0), SHUTDOWN_TIMEOUT_MS).unref();

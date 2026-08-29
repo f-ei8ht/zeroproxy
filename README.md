@@ -14,9 +14,9 @@ runtime built-ins - `"dependencies": {}`. No npm installs, no packages, nothing 
 One Bun-native binary that does the four things a real backend needs, none of which reach
 for a package:
 
-1. **Reverse proxy** - forwards requests to one or more upstream targets, streaming bodies
-   without buffering, with round-robin load balancing and automatic failover across
-   multiple upstreams.
+1. **Reverse proxy** - forwards requests to one or more upstream targets, streaming large
+   bodies without buffering the whole payload, with weighted round-robin load balancing and
+   automatic failover across multiple upstreams.
 2. **WebSocket proxy** - tunnels WebSocket connections to an upstream using the global
    `WebSocket` client and `Bun.serve`'s native upgrade, with no `ws` package.
 3. **Static file server** - serves a directory with correct MIME types, `Range` requests
@@ -53,6 +53,7 @@ wraps the same `package.json` scripts - either one is a single command):
 | `test` | Run the test suite (`bun test`) |
 | `typecheck` | Type-check with `tsc --noEmit` |
 | `proof` | Write `deps-proof.txt` (`bun pm ls` output) |
+| `bench` | Run the built-in load test (`bench/bench.ts`) |
 | `reproduce` | Build twice and write `BUILD_HASHES.txt` (byte-identical check) |
 | `clean` | Remove binaries and generated proof/hash files |
 
@@ -68,33 +69,49 @@ One command, one runnable artifact - no install step.
 ```json
 {
   "port": 8080,
+  "compression": true,
+  "retryBodyLimitBytes": 65536,
+  "healthCheck": { "intervalMs": 5000, "timeoutMs": 2000, "path": "/" },
   "routes": [
-    { "pattern": "/api/*", "upstream": "http://localhost:3000" },
     {
-      "pattern": "/ws/*",
-      "upstream": ["http://10.0.0.1:3000", "http://10.0.0.2:3000"],
-      "ws": true
+      "pattern": "/api/*",
+      "upstream": [
+        { "url": "http://10.0.0.1:3000", "weight": 3 },
+        "http://10.0.0.2:3000"
+      ]
     },
+    { "pattern": "/ws/*", "upstream": "http://10.0.0.1:3000", "ws": true },
     { "pattern": "/users/:id", "upstream": "http://localhost:3000" },
-    { "pattern": "/static/*", "static": "./public", "fallback": "./public/index.html" }
-  ],
-  "compression": true
+    { "pattern": "/static/*", "static": "./public", "fallback": "./public/index.html", "cacheControl": "public, max-age=3600" }
+  ]
 }
 ```
 
 Route keys:
 
 - `pattern` - `URLPattern` route string (wildcards `/*`, named params `/:id`).
-- `upstream` - one URL or an array of URLs; requests are round-robined across them and
-  fail over to the next on connection error or timeout.
+- `upstream` - one URL, or an array mixing strings and `{ url, weight }` objects; requests
+  are round-robined proportionally to weight and fail over to the next healthy upstream.
 - `static` - a directory (or single file) to serve.
 - `index` - the directory index file name (default `index.html`).
 - `fallback` - a file served for unmatched paths inside a `static` route (SPA mode).
+- `cacheControl` - `Cache-Control` value applied to `static` responses.
 - `ws` - set `true` on an `upstream` route to proxy WebSocket connections.
 - `method` - restrict the route to one HTTP method.
 
+Top-level keys:
+
+- `port`, `host` - bind address.
+- `compression` - toggle `Accept-Encoding` negotiation (default true).
+- `retryBodyLimitBytes` - bodies up to this size (default 64 KB) are buffered so failover can
+  replay them; larger/streaming bodies are sent once.
+- `healthCheck` - `{ intervalMs, timeoutMs, path }`; dead upstreams are probed periodically
+  and removed from rotation until they recover.
+- `tls` - `{ cert, key }` paths to serve HTTPS.
+
 CLI flags (`--port`, `--host`, `--upstream`, `--config`, `--root`) override or extend the
-file. `--upstream` adds a catch-all proxy route on top of any file routes.
+file; `ZEROPROXY_PORT` / `ZEROPROXY_HOST` env vars are fallbacks. `--upstream` adds a
+catch-all proxy route on top of any file routes.
 
 A `GET /healthz` endpoint is served on every run, reporting `status`, `uptime`, and
 in-flight `requests`/`errors` counters. When a config file is used, it is watched and
@@ -102,16 +119,24 @@ routes reload live on change (port and host are fixed for the process lifetime).
 
 ## Features
 
-- **Routing** - `URLPattern`-based matching: wildcards (`/api/*`) and named params (`/users/:id`).
-- **Reverse proxying** - streams request/response bodies via `fetch()` without buffering the
-  whole payload in memory; round-robin across multiple upstreams with failover.
-- **WebSocket proxying** - native `Bun.serve` upgrade tunnels to the upstream via the global
-  `WebSocket` client; client and upstream frames are piped both ways with no `ws` package.
-- **Static serving** - correct `Content-Type` by extension, `ETag` generation,
-  `Range`-header partial content (206), directory index, auto-generated directory listings,
-  and SPA `fallback`.
-- **Compression** - negotiates `Accept-Encoding` and transparently gzip/deflate/brotli/zstd-compresses
-  proxied and static responses using native `CompressionStream`.
+- **Routing** - `URLPattern`-based matching: wildcards (`/api/*`) and named params (`/users/:id`);
+  returns `405 Method Not Allowed` with an `Allow` header when the path matches but the method
+  does not.
+- **Reverse proxying** - streams response bodies via `fetch()` without buffering the whole
+  payload in memory; weighted round-robin across multiple upstreams.
+- **Health checks** - dead upstreams are probed every `intervalMs` and removed from rotation
+  until they recover.
+- **Failover with body replay** - a request body up to `retryBodyLimitBytes` is buffered so a
+  failed attempt is retried on the next upstream (GET/HEAD fail over regardless).
+- **WebSocket proxying** - native `Bun.serve` upgrade tunnels to an upstream picked by the
+  balancer, via the global `WebSocket` client; frames pipe both ways with no `ws` package.
+- **Static serving** - correct `Content-Type` by extension, `ETag`/`Last-Modified` caching,
+  `Range`-header partial content (206), `Cache-Control`, directory listings with `../`,
+  dotfiles blocked, and SPA `fallback`.
+- **Compression** - negotiates `Accept-Encoding` and gzip/deflate/brotli/zstd-compresses
+  text responses (skips already-compressed image/video/audio/font and tiny payloads) using
+  native `CompressionStream`, with `Vary: Accept-Encoding` set for cache correctness.
+- **TLS** - serve HTTPS via the `tls` config (cert/key paths).
 - **Health + metrics** - a `GET /healthz` endpoint reports uptime and request/error counts.
 - **Live config reload** - watches the config file and swaps routes in place without
   dropping connections.
@@ -131,16 +156,30 @@ balancer) is the intended path beyond that and is out of scope for this submissi
 ## Limits (honest gaps)
 
 - No HTTP/2 or HTTP/3 - Bun's built-in server is HTTP/1.1.
-- No TLS termination built in; run behind a TLS-terminating layer (or use Bun's native TLS
-  options) for production HTTPS.
-- Load balancing is round-robin only - no health checks or weighted routing.
-- Failover only retries requests that are safe to replay (no body, or an idempotent method
-  like `GET`/`HEAD`). A request with a body that fails mid-flight is not replayed, because
-  a consumed stream cannot be sent twice - same trade-off real proxies make.
-- WebSocket connections always target the first upstream; round-robin and failover do not
-  apply to live sockets.
-- Not benchmarked against nginx/Caddy for raw throughput; correctness and stdlib-craft are
-  the priority here, stated plainly rather than hidden.
+- No certificate issuance - TLS is supported via the `tls` config, but you bring the cert.
+- Body failover is bounded - a body larger than `retryBodyLimitBytes` is sent once and not
+  replayed, because a consumed stream cannot be sent twice - the same trade-off real proxies
+  make.
+- A live WebSocket is not reconnected if its upstream dies mid-connection; only the initial
+  target is load-balanced.
+- Not compared against nginx/Caddy for raw throughput; see the benchmark below for honest
+  numbers from this machine.
+
+## Benchmark
+
+`bun run bench` (or `make bench`) runs a built-in load test: it serves `public/index.html`
+and fires 20,000 requests across 32 concurrent workers. No `autocannon`, just `fetch` +
+`performance.now`. Honest numbers from the author's machine (Bun 1.4, Linux):
+
+| Metric | Value |
+|---|---|
+| Throughput | ~5,400 req/s |
+| p50 latency | ~5 ms |
+| p90 latency | ~8 ms |
+| p99 latency | ~13 ms |
+
+These are single-process, single-core results on one laptop; scaling is horizontal (multiple
+processes behind a load balancer).
 
 ## Zero-dependency compliance
 
@@ -161,6 +200,7 @@ balancer) is the intended path beyond that and is out of scope for this submissi
 | `mime-types` | a small hand-written extension-to-MIME table |
 | `chalk` (CLI log output) | `util.styleText()` |
 | `minimist` (arg parsing) | `util.parseArgs()` |
+| `autocannon` (load testing) | a stdlib `fetch` bench script |
 
 ## Testing
 
@@ -168,10 +208,11 @@ balancer) is the intended path beyond that and is out of scope for this submissi
 bun test
 ```
 
-Covers route matching (wildcard and param edge cases), proxy streaming and upstream
-failover, WebSocket request detection and URL mapping, static file MIME / `Range` / `ETag`
-behavior, directory listings and SPA fallback, config validation, and compression
-negotiation. Tests use `bun:test`, a built-in - no test framework dependency.
+Covers route matching (wildcard/param edge cases and 405 `Allow`), proxy streaming, weighted
+and health-aware failover (including small-body replay), WebSocket request detection and URL
+mapping, static MIME / `Range` / `ETag` / `Last-Modified` / dotfile / `Cache-Control` behavior,
+directory listings and SPA fallback, config validation, upstream health checks, and
+compression negotiation. Tests use `bun:test`, a built-in - no test framework dependency.
 
 ## License
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { compileRoutes, matchRoute } from "../src/router";
+import { allowedMethods, compileRoutes, matchRoute } from "../src/router";
 
 const routes = [
   { pattern: "/static/*" },
@@ -34,5 +34,19 @@ describe("matchRoute", () => {
 
   test("compares methods case-insensitively", () => {
     expect(matchRoute(compiled, "get", "/users/1")?.route.pattern).toBe("/users/:id");
+  });
+});
+
+describe("allowedMethods", () => {
+  test("returns the constrained method for a method-mismatched path", () => {
+    expect(allowedMethods(compiled, "/api/x")).toContain("POST");
+  });
+
+  test("returns GET for a methodless matching route", () => {
+    expect(allowedMethods(compiled, "/static/big.txt")).toContain("GET");
+  });
+
+  test("returns nothing when no route matches the path", () => {
+    expect(allowedMethods(compiled, "/nope")).toEqual([]);
   });
 });

@@ -2,10 +2,15 @@
   "port": 8080,
   "host": "0.0.0.0",
   "compression": true,
+  "retryBodyLimitBytes": 65536,
+  "healthCheck": { "intervalMs": 5000, "timeoutMs": 2000, "path": "/" },
   "routes": [
     {
       "pattern": "/api/*",
-      "upstream": ["http://localhost:3000", "http://localhost:3001"]
+      "upstream": [
+        { "url": "http://localhost:3000", "weight": 3 },
+        "http://localhost:3001"
+      ]
     },
     {
       "pattern": "/ws/*",
@@ -19,7 +24,8 @@
     {
       "pattern": "/static/*",
       "static": "./public",
-      "fallback": "./public/index.html"
+      "fallback": "./public/index.html",
+      "cacheControl": "public, max-age=3600"
     }
   ]
 }

@@ -1,0 +1,3 @@
+/home/f8/Desktop/zerodep/zeroproxy node_modules (25)
+├── @types/bun@1.4.0
+└── typescript@7.0.2

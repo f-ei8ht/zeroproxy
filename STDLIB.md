@@ -44,6 +44,8 @@ This is the project's primary reimplementation and the basis for the routing mod
 | `dotenv` | Load config | `process.env` + JSON config file | - |
 | `morgan` | HTTP request logging | a ~10-line log line via `util.styleText` | - |
 | `http-errors` | Helpers for 4xx/5xx responses | hand-written `Response` builders in `src/index.ts` | - |
+| `ws` (WebSocket) | Proxy WebSocket connections | `Bun.serve()` upgrade + global `WebSocket` | Bun |
+| `nodemon` (7.8M/wk) | Restart on file change | `fs.watch` + in-place route reload | Node 22.17 |
 
 Each substitution below has a one-line rationale explaining the choice, not just a bullet.
 
@@ -120,6 +122,21 @@ the definition of over-engineering.*
 *`cors` (~7M/wk) sets `Access-Control-Allow-Origin`. One header set on proxied responses in
 `src/proxy.ts` does it. Not a separate dependency.*
 
+### 13. `ws` (WebSocket) becomes `Bun.serve()` upgrade + global `WebSocket`
+
+*`ws` (~40M/wk) is the package everyone proxies WebSockets with; `http-proxy` needs its
+`ws: true` option to do it. Bun's `Bun.serve()` accepts a native upgrade and hands you a
+`ServerWebSocket`; the global `WebSocket` client connects to the upstream. Frames are piped
+both ways, client messages are buffered until the upstream opens, and the connection tears
+down on either side. No `ws` package, no upgrade middleware.* WebSocket: `src/ws.ts`.
+
+### 14. `nodemon` becomes `fs.watch` + in-place reload
+
+*`nodemon` (7.8M/wk) restarts a process on file change. `fs.watch` watches the config file
+and swaps the compiled routes and balancers held by the `fetch` closure in place, so routes
+change without dropping connections. `Bun.serve`'s event loop keeps serving while the reload
+happens.* Reload: `src/index.ts`.
+
 ---
 
 ## Where the standard library stops
@@ -129,5 +146,10 @@ the definition of over-engineering.*
 - **No TLS cert management** beyond Bun's `tls` option; TLS termination is expected upstream.
 - **`util.parseArgs`** handles strings/booleans only - no subcommands or coercion, which a
   single-purpose proxy does not need.
+- **Failover cannot replay a consumed body.** A request with a body that fails mid-flight
+  is sent once and not retried, because a stream cannot be consumed twice. `src/proxy.ts`
+  limits retries to body-less or idempotent requests.
+- **WebSockets are not load-balanced.** The proxy upgrades to the first upstream only;
+  round-robin and failover apply to plain HTTP, not to live sockets. `src/ws.ts`.
 
 These gaps are stated honestly rather than hidden, per the event's "numbers are honest" rule.

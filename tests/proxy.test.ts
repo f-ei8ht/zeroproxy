@@ -22,12 +22,11 @@ afterAll(() => {
 });
 
 describe("roundRobin", () => {
-  test("cycles through upstreams in order", () => {
-    const pick = roundRobin(["a", "b", "c"]);
-    expect(pick()).toBe("a");
-    expect(pick()).toBe("b");
-    expect(pick()).toBe("c");
-    expect(pick()).toBe("a");
+  test("rotates upstreams in order", () => {
+    const balancer = roundRobin(["a", "b", "c"]);
+    expect(balancer.rotate()).toEqual(["a", "b", "c"]);
+    balancer.pick();
+    expect(balancer.rotate()).toEqual(["b", "c", "a"]);
   });
 });
 
@@ -36,7 +35,7 @@ describe("proxyRequest", () => {
     const req = new Request(`http://localhost/anything`, {
       headers: { host: "localhost" },
     });
-    const res = await proxyRequest(req, { pattern: "/*" }, () => upstreamUrl);
+    const res = await proxyRequest(req, roundRobin([upstreamUrl]));
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("upstream-ok");
   });
@@ -47,13 +46,52 @@ describe("proxyRequest", () => {
       body: "payload",
       headers: { host: "localhost" },
     });
-    const res = await proxyRequest(req, { pattern: "/*" }, () => upstreamUrl);
+    const res = await proxyRequest(req, roundRobin([upstreamUrl]));
     expect(await res.text()).toBe("echo:payload");
   });
 
-  test("returns 502 when the upstream cannot be reached", async () => {
+  test("adds a CORS header to the response", async () => {
+    const req = new Request("http://localhost/anything");
+    const res = await proxyRequest(req, roundRobin([upstreamUrl]));
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  test("fails over to the next upstream", async () => {
+    const req = new Request("http://localhost/anything");
+    const res = await proxyRequest(req, roundRobin(["http://127.0.0.1:1", upstreamUrl]));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("upstream-ok");
+  });
+
+  test("returns 502 when every upstream cannot be reached", async () => {
     const req = new Request("http://localhost/x");
-    const res = await proxyRequest(req, { pattern: "/*" }, () => "http://127.0.0.1:1");
+    const res = await proxyRequest(req, roundRobin(["http://127.0.0.1:1", "http://127.0.0.1:2"]));
     expect(res.status).toBe(502);
+  });
+
+  test("fails over an idempotent GET even with a dead first upstream", async () => {
+    const req = new Request("http://localhost/anything");
+    const res = await proxyRequest(req, roundRobin(["http://127.0.0.1:1", upstreamUrl]));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("upstream-ok");
+  });
+
+  test("does not retry a POST with a body", async () => {
+    const req = new Request("http://localhost/p", {
+      method: "POST",
+      body: "payload",
+    });
+    const res = await proxyRequest(req, roundRobin(["http://127.0.0.1:1", upstreamUrl]));
+    expect(res.status).toBe(502);
+  });
+
+  test("proxies a POST to a live upstream", async () => {
+    const req = new Request("http://localhost/p", {
+      method: "POST",
+      body: "payload",
+    });
+    const res = await proxyRequest(req, roundRobin([upstreamUrl]));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("echo:payload");
   });
 });

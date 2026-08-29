@@ -1,19 +1,25 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serveStatic } from "../src/static";
 
 let dir: string;
+let listingDir: string;
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "zp-static-"));
   writeFileSync(join(dir, "hello.txt"), "hello world");
   writeFileSync(join(dir, "index.html"), "<h1>hi</h1>");
+
+  listingDir = mkdtempSync(join(tmpdir(), "zp-static-noidx-"));
+  writeFileSync(join(listingDir, "a.txt"), "A");
+  mkdirSync(join(listingDir, "sub"));
 });
 
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
+  rmSync(listingDir, { recursive: true, force: true });
 });
 
 describe("serveStatic", () => {
@@ -83,5 +89,20 @@ describe("serveStatic", () => {
       headers: { "if-none-match": etag },
     });
     expect(serveStatic(req, dir, undefined, "hello.txt").status).toBe(304);
+  });
+
+  test("generates a directory listing when no index exists", async () => {
+    const res = serveStatic(new Request("http://x/"), listingDir, undefined, "");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("a.txt");
+    expect(body).toContain("sub/");
+  });
+
+  test("serves the SPA fallback for a missing route", async () => {
+    const res = serveStatic(new Request("http://x/deep/route"), listingDir, undefined, "deep/route", "a.txt");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("A");
   });
 });

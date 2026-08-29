@@ -1,2 +1,3 @@
 track = "C"
-pitch = "zeroproxy: a zero-dependency reverse proxy, HTTP router, and static file server built on Bun's runtime built-ins"
+name = "zeroproxy"
+pitch = "zeroproxy: a zero-dependency reverse proxy, HTTP router, static file server, and WebSocket tunnel built on Bun's runtime built-ins - URLPattern routing, streaming failover, CompressionStream, and live config reload, with an empty manifest."

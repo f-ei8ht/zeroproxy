@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { extname, join, resolve, sep } from "node:path";
-import { statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 
 const MIME_TYPES: Record<string, string> = {
   html: "text/html; charset=utf-8",
@@ -95,24 +95,59 @@ function sendFile(req: Request, fsPath: string): Response {
   });
 }
 
-export function serveStatic(req: Request, staticPath: string, indexFile?: string, subpath = ""): Response {
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function dirListing(dirPath: string, relative: string): Response {
+  const entries = readdirSync(dirPath, { withFileTypes: true }).sort(
+    (a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name),
+  );
+  const baseHref = relative ? `/${relative.replace(/\\/g, "/")}` : "";
+  const rows = entries
+    .map((entry) => {
+      const name = entry.name;
+      const href = `${baseHref}/${encodeURIComponent(name)}`;
+      const label = entry.isDirectory() ? `${name}/` : name;
+      return `<li><a href="${href}">${escapeHtml(label)}</a></li>`;
+    })
+    .join("");
+  const title = `Index of ${escapeHtml(relative || "/")}`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body><h1>${title}</h1><ul>${rows}</ul></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+export function serveStatic(
+  req: Request,
+  staticPath: string,
+  indexFile?: string,
+  subpath = "",
+  fallbackFile?: string,
+): Response {
   const base = resolve(staticPath);
   const baseStat = statSync(base, { throwIfNoEntry: false });
   if (!baseStat) return notFound();
 
-  let fsPath = base;
-  if (baseStat.isDirectory()) {
-    const relative = subpath.replace(/^\/+/, "");
-    const candidate = resolve(base, relative);
-    if (candidate !== base && !candidate.startsWith(base + sep)) return notFound();
-    let target = candidate;
-    let stat = statSync(target, { throwIfNoEntry: false });
-    if (stat?.isDirectory()) {
-      target = join(target, indexFile ? indexFile.split(sep).pop()! : DEFAULT_INDEX);
-      stat = statSync(target, { throwIfNoEntry: false });
-    }
-    if (!stat?.isFile()) return notFound();
-    fsPath = target;
+  if (!baseStat.isDirectory()) return sendFile(req, base);
+
+  const relative = subpath.replace(/^\/+/, "");
+  const candidate = resolve(base, relative);
+  if (candidate !== base && !candidate.startsWith(base + sep)) return notFound();
+
+  const indexName = (indexFile?.split(sep).pop() ?? DEFAULT_INDEX)!;
+  const indexFallback = () => {
+    const path = join(base, fallbackFile!);
+    return statSync(path, { throwIfNoEntry: false })?.isFile() ? sendFile(req, path) : notFound();
+  };
+
+  const stat = statSync(candidate, { throwIfNoEntry: false });
+  if (stat?.isDirectory()) {
+    const indexPath = join(candidate, indexName);
+    if (statSync(indexPath, { throwIfNoEntry: false })?.isFile()) return sendFile(req, indexPath);
+    if (fallbackFile) return indexFallback();
+    return dirListing(candidate, relative);
   }
-  return sendFile(req, fsPath);
+  if (stat?.isFile()) return sendFile(req, candidate);
+  if (fallbackFile) return indexFallback();
+  return notFound();
 }

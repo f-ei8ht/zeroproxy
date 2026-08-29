@@ -7,6 +7,8 @@ export type Route = {
   upstream?: string[];
   static?: string;
   index?: string;
+  fallback?: string;
+  ws?: boolean;
 };
 
 export type Config = {
@@ -32,11 +34,22 @@ function parseRoutes(raw: unknown): Route[] {
       if (!list.every((u) => typeof u === "string" && isUrl(u))) {
         throw new Error(`route ${i} has an invalid upstream`);
       }
-      return { pattern: route.pattern, method: route.method as string, upstream: list as string[] };
+      return {
+        pattern: route.pattern,
+        method: route.method as string,
+        upstream: list as string[],
+        ws: route.ws === true,
+      };
     }
     if (route.static !== undefined) {
       if (typeof route.static !== "string") throw new Error(`route ${i} has an invalid static root`);
-      return { pattern: route.pattern, method: route.method as string, static: route.static, index: route.index as string };
+      return {
+        pattern: route.pattern,
+        method: route.method as string,
+        static: route.static,
+        index: route.index as string,
+        fallback: route.fallback as string,
+      };
     }
     throw new Error(`route ${i} must set upstream or static`);
   });
@@ -61,7 +74,9 @@ export function validateConfig(raw: unknown): Config {
   return { port, host, compression, routes: parseRoutes(obj.routes ?? []) };
 }
 
-export async function loadConfig(args: string[]): Promise<Config> {
+export type LoadedConfig = { config: Config; source?: string };
+
+export async function loadConfig(args: string[]): Promise<LoadedConfig> {
   const { values } = parseArgs({
     args,
     allowPositionals: true,
@@ -75,8 +90,9 @@ export async function loadConfig(args: string[]): Promise<Config> {
   });
 
   let config: Config;
-  if (values.config) {
-    config = await loadConfigFile(values.config);
+  const source = values.config as string | undefined;
+  if (source) {
+    config = await loadConfigFile(source);
   } else {
     const upstream = values.upstream ?? [];
     config = {
@@ -92,10 +108,17 @@ export async function loadConfig(args: string[]): Promise<Config> {
     route.static ? { ...route, static: resolve(root, route.static) } : route,
   );
 
-  if (values.port) config.port = parseInt(values.port, 10);
+  if (values.port) {
+    const port = Number(values.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`invalid --port: ${values.port} (expected an integer between 1 and 65535)`);
+    }
+    config.port = port;
+  }
   if (values.host) config.host = values.host;
   if (values.upstream && values.upstream.length > 0) {
-    config.routes = [{ pattern: "/*", upstream: values.upstream }];
+    config.routes = config.routes.filter((r) => !(r.pattern === "/*" && r.upstream));
+    config.routes.push({ pattern: "/*", upstream: values.upstream });
   }
-  return config;
+  return { config, source };
 }

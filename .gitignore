@@ -6,6 +6,11 @@ out
 dist
 *.tgz
 
+# compiled binaries (the reproducible-build proof files are committed, not ignored)
+zeroproxy
+zeroproxy-build-1
+zeroproxy-build-2
+
 # code coverage
 coverage
 *.lcov

@@ -28,6 +28,117 @@ for a package:
 It is the kind of tool most people build with `express` + `http-proxy-middleware` +
 `serve-static`. This one imports none of them.
 
+## How it works
+
+`zeroproxy` is one process, one event loop, and no threads of its own. Every request
+enters through `Bun.serve`'s `fetch` handler, is classified, routed, and answered, and
+the connection is handed back to the runtime.
+
+```mermaid
+flowchart TD
+    C["Client"] -->|HTTP request| F["Bun.serve fetch handler"]
+    F --> HZ{"Path is /healthz?"}
+    HZ -->|yes| OK["healthz JSON: status, uptime, requests, errors"]
+    HZ -->|no| WS{"WebSocket upgrade?"}
+    WS -->|yes| PK["Balancer picks an upstream"]
+    PK --> UP["srv.upgrade + frame tunnel"]
+    WS -->|no| RT["router: match path against URLPattern"]
+    RT --> MT{"Route matched?"}
+    MT -->|no| MS["405 + Allow header, or 404"]
+    MT -->|yes| PR{"Route has upstream?"}
+    PR -->|yes| PX["proxyRequest: streaming fetch with failover"]
+    PR -->|no| ST["serveStatic: Bun.file, Range, ETag"]
+    PX --> CP["CompressionStream negotiation"]
+    ST --> CP
+    CP -->|"encoding accepted"| ZP["gzip / deflate / br / zstd"]
+    CP -->|"no match"| PD["response unchanged"]
+    ZP --> OUT["Response to client"]
+    PD --> OUT
+```
+
+In plain English, each request:
+
+1. Reaches the `fetch` handler in `src/index.ts`.
+2. `/healthz` short-circuits with uptime and counters; no routing involved.
+3. A WebSocket upgrade, when the matched route has `"ws": true`, is handed to
+   `srv.upgrade` and tunneled to a balancer-picked upstream (`src/ws.ts`).
+4. Otherwise `src/router.ts` runs the path against every configured `URLPattern` in
+   order and returns the first match.
+5. A matching path with the wrong method yields `405` plus an `Allow` header; no
+   match yields `404`.
+6. An upstream route goes to `proxyRequest` (`src/proxy/index.ts`), which streams
+   the response via `fetch` and fails over to the next healthy upstream when the
+   first attempt fails.
+7. A static route goes to `serveStatic` (`src/static.ts`), which streams `Bun.file`
+   with MIME, `Range`, `ETag`/`If-None-Match` and directory listing.
+8. The response passes through compression (`src/compress.ts`): when the client
+   accepts an encoding and the body benefits, it is piped through a native
+   `CompressionStream` and `Vary: Accept-Encoding` is set.
+
+That is the full path for one request. `fs.watch` can swap the compiled routes in
+place when the config file changes, and `SIGINT`/`SIGTERM` drain in-flight requests
+before `server.stop()`.
+
+### How a request fails over
+
+When an upstream is down, the request is retried on the next healthy target. A body
+at or below `retryBodyLimitBytes` (or no body at all) is buffered so it can be
+replayed; a larger body is sent once, because a consumed stream cannot be sent twice.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant P as zeroproxy
+    participant A as Upstream A
+    participant B as Upstream B
+    C->>P: POST /api/orders
+    Note over P: body <= 64 KB, buffered for replay
+    P->>A: fetch attempt
+    A--xC: connection refused
+    P->>B: retry on next healthy upstream
+    B-->>P: 200 OK, streaming body
+    P-->>C: 200 OK, streaming body
+```
+
+`src/proxy/health.ts` probes dead upstreams on a timer and removes them from rotation
+until they recover, so a request never spends a retry on a target the balancer already
+knows is down.
+
+## Project structure
+
+`index.ts` is the only file that touches `Bun.serve`. Everything else is a pure
+function or factory over its inputs, which is what keeps each module testable in
+isolation.
+
+```mermaid
+graph LR
+    subgraph src
+        idx["index.ts - Bun.serve wiring, logging, reload, shutdown"]
+        cfg["config.ts - parseArgs flags, env, config file, validation"]
+        rtr["router.ts - URLPattern compile and match, 405 Allow"]
+        st["static.ts - MIME, Range, ETag, listings, SPA fallback"]
+        cmp["compress.ts - encoding negotiation, CompressionStream"]
+        prx["proxy/index.ts - streaming fetch, failover, 502/504"]
+        bal["proxy/balancer.ts - weighted round-robin"]
+        hth["proxy/health.ts - periodic upstream probes"]
+        ws["ws.ts - upgrade detection, URL mapping"]
+    end
+    idx --> cfg
+    idx --> rtr
+    idx --> st
+    idx --> cmp
+    idx --> prx
+    idx --> hth
+    idx --> ws
+    prx --> bal
+    hth --> bal
+    rtr --> cfg
+```
+
+Tests (`tests/`) exercise each module directly, from `URLPattern` edge cases and 405
+`Allow` headers to weighted failover, static `Range`/`ETag`, and compression
+negotiation. `bench/bench.ts` is a zero-dependency load test.
+
 ## Quick start
 
 One command builds (choose either):
@@ -169,14 +280,15 @@ balancer) is the intended path beyond that and is out of scope for this submissi
 
 `bun run bench` (or `make bench`) runs a built-in load test: it serves `public/index.html`
 and fires 20,000 requests across 32 concurrent workers. No `autocannon`, just `fetch` +
-`performance.now`. Honest numbers from the author's machine (Bun 1.4, Linux):
+`performance.now`. Honest numbers from the author's machine (ThinkPad E16 Gen 2, AMD
+Ryzen 5 7535U, 12 threads, Manjaro Linux, Bun 1.4):
 
 | Metric | Value |
 |---|---|
-| Throughput | ~5,400 req/s |
+| Throughput | ~5,580 req/s |
 | p50 latency | ~5 ms |
-| p90 latency | ~8 ms |
-| p99 latency | ~13 ms |
+| p90 latency | ~9 ms |
+| p99 latency | ~12 ms |
 
 These are single-process, single-core results on one laptop; scaling is horizontal (multiple
 processes behind a load balancer).
@@ -214,6 +326,16 @@ mapping, static MIME / `Range` / `ETag` / `Last-Modified` / dotfile / `Cache-Con
 directory listings and SPA fallback, config validation, upstream health checks, and
 compression negotiation. Tests use `bun:test`, a built-in - no test framework dependency.
 
+## References
+
+Built against the runtime docs and open specifications. All code was written fresh
+during the event window; no third-party source was vendored.
+
+- **Bun** - [`Bun.serve`](https://bun.sh/docs/api/http), [`Bun.file`](https://bun.sh/docs/api/file-io), [`URLPattern`](https://bun.sh/docs/api/url), [build / compile](https://bun.sh/docs/bundler/full-bundler)
+- **TypeScript** - [typescriptlang.org](https://www.typescriptlang.org/), strict-mode best practices
+- **TypeScript best practices** - [andredesousa/typescript-best-practices](https://github.com/andredesousa/typescript-best-practices)
+- **Hackathon cheat-sheets** - [zerodepshack.com/cheatsheets](https://zerodepshack.com/cheatsheets), the per-track stdlib capability matrix that drove the substitution choices in `STDLIB.md`
+
 ## License
 
-MIT
+[MIT](./LICENSE)

@@ -17,11 +17,14 @@ typecheck:
 proof:
 	$(BUN) pm ls > deps-proof.txt
 
+# Build twice to the SAME outfile name (the filename is embedded in the binary,
+# so different names would differ by one byte). Copy apart afterwards.
 reproduce:
-	$(BUN) build ./src/index.ts --compile --outfile $(BIN)-build-1
-	$(BUN) build ./src/index.ts --compile --outfile $(BIN)-build-2
+	$(BUN) build ./src/index.ts --compile --outfile $(BIN)-repro && cp $(BIN)-repro $(BIN)-build-1
+	$(BUN) build ./src/index.ts --compile --outfile $(BIN)-repro && cp $(BIN)-repro $(BIN)-build-2
+	rm -f $(BIN)-repro
 	sha256sum $(BIN)-build-1 $(BIN)-build-2 > BUILD_HASHES.txt
 	cmp $(BIN)-build-1 $(BIN)-build-2 && echo "BYTE-IDENTICAL"
 
 clean:
-	rm -f $(BIN) $(BIN)-build-1 $(BIN)-build-2 BUILD_HASHES.txt
+	rm -f $(BIN) $(BIN)-build-1 $(BIN)-build-2 $(BIN)-repro BUILD_HASHES.txt

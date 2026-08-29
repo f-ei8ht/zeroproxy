@@ -1,0 +1,25 @@
+{
+  "port": 8080,
+  "host": "0.0.0.0",
+  "compression": true,
+  "routes": [
+    {
+      "pattern": "/api/*",
+      "upstream": ["http://localhost:3000", "http://localhost:3001"]
+    },
+    {
+      "pattern": "/ws/*",
+      "upstream": "http://localhost:3000",
+      "ws": true
+    },
+    {
+      "pattern": "/users/:id",
+      "upstream": "http://localhost:3000"
+    },
+    {
+      "pattern": "/static/*",
+      "static": "./public",
+      "fallback": "./public/index.html"
+    }
+  ]
+}

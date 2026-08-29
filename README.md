@@ -56,6 +56,11 @@ wraps the same `package.json` scripts - either one is a single command):
 | `reproduce` | Build twice and write `BUILD_HASHES.txt` (byte-identical check) |
 | `clean` | Remove binaries and generated proof/hash files |
 
+Note on `reproduce`: Bun embeds the output filename into the compiled binary, so
+byte-identical builds require a constant `--outfile` name. The target builds twice to one
+name and copies the results apart. Reproducibility holds on the same machine and toolchain,
+as the bonus requires; two builds on different environments may differ.
+
 One command, one runnable artifact - no install step.
 
 ## Configuration

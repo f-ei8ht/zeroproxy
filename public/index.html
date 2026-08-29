@@ -1,12 +1,19 @@
- <meta charset="utf-8">
- <title>zeroproxy</title>
- <link rel="stylesheet" href="/static/style.css">
- <h1>zeroproxy works</h1>
- <p>This page is served from the <code>public/</code> directory by the built-in static file server.</p>
- <ul>
-   <li>ETag / If-None-Match caching</li>
-   <li>Range requests (try a video or PDF)</li>
-   <li>Directory index fallback</li>
-   <li>gzip / brotli / zstd compression</li>
- </ul>
- <p>Try <a href="/static/sub/hello.txt">/static/sub/hello.txt</a> for a nested file.</p>
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>zeroproxy</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <h1>zeroproxy works</h1>
+    <p>This page is served from the <code>public/</code> directory by the built-in static file server.</p>
+    <ul>
+      <li>ETag / If-None-Match caching</li>
+      <li>Range requests (try a video or PDF)</li>
+      <li>Directory index fallback</li>
+      <li>gzip / brotli / zstd compression</li>
+    </ul>
+    <p>Try <a href="/static/sub/hello.txt">/static/sub/hello.txt</a> for a nested file.</p>
+  </body>
+</html>

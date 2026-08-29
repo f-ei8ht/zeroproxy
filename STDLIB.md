@@ -151,5 +151,9 @@ happens.* Reload: `src/index.ts`.
   limits retries to body-less or idempotent requests.
 - **WebSockets are not load-balanced.** The proxy upgrades to the first upstream only;
   round-robin and failover apply to plain HTTP, not to live sockets. `src/ws.ts`.
+- **Reproducible builds need a constant output name.** Bun embeds the `--outfile` filename
+  into the compiled binary, so two builds with different names differ by one byte. The
+  `reproduce` target builds twice to one name and copies apart; hashes match on the same
+  machine and toolchain, and may differ across environments.
 
 These gaps are stated honestly rather than hidden, per the event's "numbers are honest" rule.

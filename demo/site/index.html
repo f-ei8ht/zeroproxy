@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>zeroproxy live demo</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 16px/1.6 system-ui, sans-serif; background: #0b1220; color: #dbe4f0; }
+      main { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }
+      h1 { margin: 0; font-size: 28px; color: #4ade80; }
+      h2 { margin: 0 0 12px; font-size: 18px; color: #93c5fd; }
+      header p { color: #8fa3bf; max-width: 62ch; }
+      section { margin: 28px 0; padding: 20px; background: #111a2e; border: 1px solid #22304d; border-radius: 10px; }
+      section p { color: #8fa3bf; margin: 0 0 14px; }
+      button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid #2e4166; background: #1b2a47; color: #dbe4f0; cursor: pointer; }
+      button:hover { background: #24365c; }
+      .cards { display: flex; gap: 12px; flex-wrap: wrap; }
+      .card { flex: 1; min-width: 120px; padding: 12px 16px; background: #0b1220; border: 1px solid #22304d; border-radius: 8px; }
+      .card b { display: block; font-size: 22px; color: #4ade80; }
+      .card span { font-size: 12px; color: #8fa3bf; text-transform: uppercase; letter-spacing: 1px; }
+      ul { list-style: none; margin: 14px 0 0; padding: 0; }
+      li { padding: 6px 10px; border-left: 3px solid #22304d; margin: 6px 0; background: #0b1220; font-family: ui-monospace, monospace; font-size: 14px; overflow-wrap: anywhere; }
+      .badge { display: inline-block; padding: 1px 8px; margin-right: 8px; border-radius: 999px; font-size: 12px; }
+      .badge.a { background: #14532d; color: #86efac; }
+      .badge.b { background: #1e3a8a; color: #93c5fd; }
+      pre { margin: 14px 0 0; padding: 12px; background: #0b1220; border: 1px solid #22304d; border-radius: 8px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; }
+      form { display: flex; gap: 8px; margin-top: 12px; }
+      input { flex: 1; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #2e4166; background: #0b1220; color: #dbe4f0; }
+      footer { color: #64748b; font-size: 14px; margin-top: 40px; }
+      a { color: #93c5fd; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>zeroproxy</h1>
+        <p>You are talking to the proxy right now. This page is plain HTML, CSS, and
+        JavaScript served by zeroproxy's static file server - no framework, no build
+        step, zero dependencies. Every button below exercises a different proxy feature.</p>
+      </header>
+
+      <section>
+        <h2>Live server status</h2>
+        <p>Polled from the built-in GET /healthz endpoint every two seconds.</p>
+        <div class="cards">
+          <div class="card"><b id="status">-</b><span>status</span></div>
+          <div class="card"><b id="uptime">-</b><span>uptime</span></div>
+          <div class="card"><b id="requests">-</b><span>requests</span></div>
+          <div class="card"><b id="errors">-</b><span>errors</span></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>1. Reverse proxy with round-robin load balancing</h2>
+        <p>Two mock upstreams (A and B, equal weight) sit behind the /api/* route.
+        Each click is forwarded by the proxy; the JSON says which upstream answered.
+        Click a few times and watch it alternate.</p>
+        <button id="proxy-btn">Send a request through the proxy</button>
+        <div class="cards" style="margin-top: 12px">
+          <div class="card"><b id="tally-a">0</b><span>upstream A served</span></div>
+          <div class="card"><b id="tally-b">0</b><span>upstream B served</span></div>
+        </div>
+        <ul id="proxy-log"></ul>
+      </section>
+
+      <section>
+        <h2>2. Static file server with Range requests</h2>
+        <p>Fetches the first 100 bytes of range-demo.txt with a Range header. The
+        static server answers 206 Partial Content with a Content-Range header
+        instead of sending the whole file.</p>
+        <button id="range-btn">Request bytes 0-99 of range-demo.txt</button>
+        <pre id="range-out">click the button</pre>
+      </section>
+
+      <section>
+        <h2>3. WebSocket tunnel</h2>
+        <p>Opens a WebSocket to /ws/echo. zeroproxy upgrades it natively and tunnels
+        every frame to the upstream, which echoes it back through the tunnel.</p>
+        <button id="ws-btn">Connect and say hello</button>
+        <form id="ws-form">
+          <input id="ws-input" placeholder="type a message and press enter" autocomplete="off">
+          <button>Send</button>
+        </form>
+        <ul id="ws-log"></ul>
+      </section>
+
+      <footer>
+        Source and tests: <a href="https://github.com/f-ei8ht/zeroproxy">github.com/f-ei8ht/zeroproxy</a>.
+        The mock upstreams and this page live in the demo/ directory of the repo.
+      </footer>
+    </main>
+    <script>
+      const POLL_MS = 2000;
+      const LOG_CAP = 8;
+      const byId = (id) => document.getElementById(id);
+
+      function addLog(list, badge, text) {
+        const li = document.createElement("li");
+        if (badge) {
+          const b = document.createElement("span");
+          b.className = "badge " + badge.toLowerCase();
+          b.textContent = badge;
+          li.appendChild(b);
+        }
+        li.appendChild(document.createTextNode(text));
+        list.prepend(li);
+        while (list.children.length > LOG_CAP) list.removeChild(list.lastChild);
+      }
+
+      async function poll() {
+        try {
+          const data = await (await fetch("/healthz")).json();
+          byId("status").textContent = data.status;
+          const minutes = Math.floor(data.uptime / 60);
+          const seconds = data.uptime % 60;
+          byId("uptime").textContent = minutes > 0 ? minutes + "m " + seconds + "s" : seconds + "s";
+          byId("requests").textContent = data.requests;
+          byId("errors").textContent = data.errors;
+        } catch (err) {
+          byId("status").textContent = "unreachable";
+        }
+      }
+      setInterval(poll, POLL_MS);
+      poll();
+
+      const tally = { "upstream-A": 0, "upstream-B": 0 };
+      byId("proxy-btn").onclick = async () => {
+        const res = await fetch("/api/whoami");
+        const data = await res.json();
+        if (!(data.servedBy in tally)) return;
+        tally[data.servedBy]++;
+        byId("tally-a").textContent = tally["upstream-A"];
+        byId("tally-b").textContent = tally["upstream-B"];
+        addLog(byId("proxy-log"), data.servedBy.slice(-1),
+          "GET /api/whoami -> " + res.status + " via 1.1 zeroproxy  " + JSON.stringify(data));
+      };
+
+      byId("range-btn").onclick = async () => {
+        const res = await fetch("/range-demo.txt", { headers: { Range: "bytes=0-99" } });
+        const body = await res.text();
+        byId("range-out").textContent =
+          "status:         " + res.status + "\n" +
+          "content-range:  " + (res.headers.get("content-range") ?? "(none)") + "\n" +
+          "body (" + body.length + " bytes):\n" + body;
+      };
+
+      let ws;
+      byId("ws-btn").onclick = () => {
+        if (ws && ws.readyState !== WebSocket.CLOSED) return;
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        ws = new WebSocket(proto + "://" + location.host + "/ws/echo");
+        ws.onopen = () => {
+          addLog(byId("ws-log"), null, "connected through the tunnel");
+          ws.send("hello from the browser");
+        };
+        ws.onmessage = (e) => addLog(byId("ws-log"), null, "echoed: " + e.data);
+        ws.onclose = () => addLog(byId("ws-log"), null, "tunnel closed");
+      };
+      byId("ws-form").onsubmit = (e) => {
+        e.preventDefault();
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const input = byId("ws-input");
+        if (!input.value) return;
+        ws.send(input.value);
+        input.value = "";
+      };
+    </script>
+  </body>
+</html>

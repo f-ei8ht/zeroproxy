@@ -153,7 +153,10 @@ export async function proxyRequest(
   const plan = await planBody(req, opts);
   if (plan instanceof Response) return plan;
 
-  const candidates = balancer.rotate();
+  // pick() consumes one turn so consecutive requests rotate; rotate() then
+  // lists the remaining healthy upstreams as failover candidates.
+  const primary = balancer.pick();
+  const candidates = [primary, ...balancer.rotate().filter((url) => url !== primary)];
   const attempts = plan.replay ? candidates : candidates.slice(0, 1);
   const suffix = orig.pathname + orig.search;
   const idempotent = IDEMPOTENT.has(req.method.toUpperCase());

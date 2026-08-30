@@ -1,0 +1,10 @@
+{
+  "port": 8080,
+  "host": "0.0.0.0",
+  "compression": true,
+  "routes": [
+    { "pattern": "/api/*", "upstream": ["http://127.0.0.1:9101", "http://127.0.0.1:9102"] },
+    { "pattern": "/ws/*", "upstream": "http://127.0.0.1:9101", "ws": true },
+    { "pattern": "/*", "static": "./site" }
+  ]
+}

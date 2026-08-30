@@ -91,6 +91,11 @@ describe("shouldCompress", () => {
     expect(shouldCompress("gzip", res, 256)).toBe(false);
   });
 
+  test("is false for a 206 partial response", () => {
+    const res = new Response("x".repeat(1000), { status: 206, headers: { "content-length": "1000" } });
+    expect(shouldCompress("gzip", res, 256)).toBe(false);
+  });
+
   test("is true for compressible text above the minimum size", () => {
     expect(shouldCompress("gzip", new Response("x".repeat(1000)), 256)).toBe(true);
   });

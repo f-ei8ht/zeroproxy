@@ -24,7 +24,7 @@
     {
       "pattern": "/static/*",
       "static": "./public",
-      "fallback": "./public/index.html",
+      "fallback": "index.html",
       "cacheControl": "public, max-age=3600"
     }
   ]

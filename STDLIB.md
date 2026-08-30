@@ -58,6 +58,7 @@ This is the project's primary reimplementation and the basis for the routing mod
 | `autocannon` | Load-test an HTTP server | stdlib `fetch` + `performance.now` bench script | - |
 | `zod` (schema validation) | Validate config | hand-written guard functions in `src/config.ts` | - |
 | `cors` | Cross-origin headers | hand-written header on proxied responses | - |
+| `grafana` / React status dashboards | Live ops visibility | one static HTML page polling `/healthz` | - |
 
 Each substitution below has a one-line rationale explaining the choice, not just a bullet.
 Download counts are npm weekly downloads, checked 2026-08-30.
@@ -121,9 +122,9 @@ function writes it; colour comes from `util.styleText`. No logging framework, no
 
 ### 10. `http-errors` becomes hand-written `Response` builders
 
-*`http-errors` (~170M/wk) creates error Responses. `new Response(body, { status, statusText })`
-and two small helper functions (`json`, `plain`) cover 400/404/405/500/502/504. The proxy's
-upstream-failure handling in `src/proxy/index.ts` returns `502`/`504` Responses directly.*
+*`http-errors` (~170M/wk) creates error Responses. Plain `new Response(body, { status,
+statusText })` constructors in `src/index.ts` cover 400/404/405/500; `upstreamFailure`
+(502/504) and `bodyTooLarge` (413) in `src/proxy/index.ts` are the whole helper surface.*
 
 ### 11. `zod` (schema validation, config) becomes hand-written guard functions
 
@@ -158,6 +159,14 @@ fires N requests across C concurrent workers with global `fetch`, and reports th
 p50/p90/p99 latency from a `performance.now()` histogram - no package. On the author's
 machine (ThinkPad E16 Gen 2, Ryzen 5 7535U) it sustains ~4,900 req/s at p50 ~6 ms
 (20,000 requests, 32 workers) - the honest baseline for this submission.* Bench: `bench/bench.ts`.
+
+### 16. `grafana` / React status dashboards become one static HTML page
+
+*Live ops visibility normally means Grafana or a React admin app with its build
+chain. The demo dashboard is a single HTML file with inline JavaScript that polls the
+built-in `/healthz` endpoint and exercises the proxy, static, and WebSocket routes
+from the browser - served by zeroproxy's own static file server, no framework, no
+bundler.* Demo: `demo/site/index.html`.
 
 ---
 

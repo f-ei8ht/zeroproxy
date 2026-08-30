@@ -113,9 +113,10 @@ knows is down.
 
 ## Project structure
 
-`index.ts` is the only file that touches `Bun.serve`. Everything else is a pure
+In `src/`, `index.ts` is the only file that touches `Bun.serve`. Everything else is a pure
 function or factory over its inputs, which is what keeps each module testable in
-isolation.
+isolation. (The demo's mock upstream, `demo/upstream.ts`, is the one deliberate
+`Bun.serve` user outside `src/` - it exists to give the proxy something to forward to.)
 
 ```mermaid
 graph LR
@@ -144,7 +145,9 @@ graph LR
 
 Tests (`tests/`) exercise each module directly, from `URLPattern` edge cases and 405
 `Allow` headers to weighted failover, static `Range`/`ETag`, and compression
-negotiation. `bench/bench.ts` is a zero-dependency load test.
+negotiation. `bench/bench.ts` is a zero-dependency load test. `demo/` is the live
+demo package: two mock upstreams, a zero-dependency dashboard page, and a
+one-command runner.
 
 ## Quick start
 
@@ -168,6 +171,7 @@ wraps the same `package.json` scripts - either one is a single command):
 | Task | Effect |
 |---|---|
 | `build` | Compile `src/` into the `zeroproxy` binary |
+| `demo` | Start the full local demo (proxy + both mock upstreams) |
 | `test` | Run the test suite (`bun test`) |
 | `typecheck` | Type-check with `tsc --noEmit` |
 | `proof` | Write `deps-proof.txt` (`bun pm ls` output) |
@@ -181,6 +185,28 @@ name and copies the results apart. Reproducibility holds on the same machine and
 as the bonus requires; two builds on different environments may differ.
 
 One command, one runnable artifact - no install step.
+
+## Live demo
+
+`demo/` is the click-and-play package: two mock upstreams, a config that puts
+zeroproxy in front of them, and a dashboard page served by zeroproxy itself.
+Clone and run it with one command (needs only Bun):
+
+```bash
+git clone https://github.com/f-ei8ht/zeroproxy.git
+cd zeroproxy
+make demo                # or: bun run demo
+```
+
+It starts upstream A on :9101, upstream B on :9102, and zeroproxy on :8080,
+waits until the proxy answers, and prints the URL. Open
+`http://localhost:8080`. The dashboard polls the built-in `/healthz` endpoint
+live and has one button per feature: send a request through the proxy (the
+response names which upstream answered, so the round-robin is visible), fetch
+the first 100 bytes of a file with a `Range` header (206 + `Content-Range`),
+and open a WebSocket through the tunnel (echoed by the upstream). The page is
+plain HTML, CSS, and JavaScript - no framework, no build step. Ctrl-C stops
+all three processes.
 
 ## Configuration
 
@@ -200,7 +226,7 @@ One command, one runnable artifact - no install step.
     },
     { "pattern": "/ws/*", "upstream": "http://10.0.0.1:3000", "ws": true },
     { "pattern": "/users/:id", "upstream": "http://localhost:3000" },
-    { "pattern": "/static/*", "static": "./public", "fallback": "./public/index.html", "cacheControl": "public, max-age=3600" }
+    { "pattern": "/static/*", "static": "./public", "fallback": "index.html", "cacheControl": "public, max-age=3600" }
   ]
 }
 ```
@@ -212,7 +238,7 @@ Route keys:
   are round-robined proportionally to weight and fail over to the next healthy upstream.
 - `static` - a directory (or single file) to serve.
 - `index` - the directory index file name (default `index.html`).
-- `fallback` - a file served for unmatched paths inside a `static` route (SPA mode).
+- `fallback` - a file (relative to the `static` root) served for unmatched paths inside a `static` route (SPA mode).
 - `cacheControl` - `Cache-Control` value applied to `static` responses.
 - `ws` - set `true` on an `upstream` route to proxy WebSocket connections.
 - `method` - restrict the route to one HTTP method.
@@ -349,7 +375,9 @@ a live tunnel, static MIME / `Range` (single, suffix, multi-range, malformed) / 
 config validation, upstream health checks, and compression negotiation with q-values. An
 integration suite boots the real server and exercises `/healthz`, proxying, 405, static
 serving, the WebSocket tunnel, live config reload, and `SIGTERM` shutdown. Tests use
-`bun:test`, a built-in - no test framework dependency.
+`bun:test`, a built-in - no test framework dependency. A demo suite boots the whole
+demo package end to end: the dashboard at `/`, the 206 `Range` slice, round-robin
+between the mock upstreams, and the WebSocket echo through the tunnel.
 
 ## References
 

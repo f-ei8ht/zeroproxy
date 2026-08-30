@@ -1,0 +1,14 @@
+This file exists so the Range demo has something to slice.
+
+The button in the dashboard asks zeroproxy for bytes 0-99 of this file with a
+plain HTTP Range header. The static file server does not send the whole file:
+it answers 206 Partial Content, a Content-Range header naming the slice, and a
+Content-Length of exactly 100 bytes. The same mechanism serves video seeking,
+resumable downloads, and PDF preview, all without a package - just Bun.file()
+and a few lines of header parsing.
+
+The bytes below the first hundred are filler so the file is larger than the
+requested range, which is what makes the partial response observable.
+Filler. Filler. Filler. Filler. Filler. Filler. Filler. Filler. Filler. Filler.
+Filler. Filler. Filler. Filler. Filler. Filler. Filler. Filler. Filler. Filler.
+Filler. Filler. Filler. Filler. Filler. Filler. Filler. Filler. Filler. Filler.

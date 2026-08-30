@@ -1,12 +1,15 @@
 BUN ?= bun
 BIN := zeroproxy
 
-.PHONY: build test typecheck proof reproduce bench clean all
+.PHONY: build demo test typecheck proof reproduce bench clean all
 
 all: build
 
 build:
 	$(BUN) build ./src/index.ts --compile --outfile $(BIN)
+
+demo:
+	$(BUN) demo/run.ts
 
 test:
 	$(BUN) test

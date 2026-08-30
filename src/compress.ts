@@ -49,6 +49,8 @@ export function compressBody(body: ReadableStream<Uint8Array>, encoding: Encodin
 
 export function shouldCompress(encoding: Encoding, res: Response, minBytes: number): boolean {
   if (encoding === "identity") return false;
+  // Partial and error responses pass through untouched.
+  if (res.status !== 200) return false;
   if (res.headers.get("content-encoding")) return false;
   const type = res.headers.get("content-type") ?? "";
   if (NO_BENEFIT_TYPES.some((prefix) => type.startsWith(prefix))) return false;

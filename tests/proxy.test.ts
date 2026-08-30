@@ -118,6 +118,19 @@ describe("proxyRequest", () => {
     expect(seen.via).toBe("1.1 zeroproxy");
   });
 
+  test("consecutive requests rotate across upstreams", async () => {
+    const second = Bun.serve({ port: 0, fetch: () => new Response("upstream-two") });
+    try {
+      const balancer = roundRobin([upstreamUrl, `http://localhost:${second.port}`]);
+      const first = await proxyRequest(new Request("http://localhost/anything"), balancer, opts());
+      const next = await proxyRequest(new Request("http://localhost/anything"), balancer, opts());
+      const bodies = new Set([await first.text(), await next.text()]);
+      expect(bodies).toEqual(new Set(["upstream-ok", "upstream-two"]));
+    } finally {
+      second.stop(true);
+    }
+  });
+
   test("fails over to the next upstream", async () => {
     const res = await proxyRequest(new Request("http://localhost/anything"), roundRobin([DEAD, upstreamUrl]), opts());
     expect(res.status).toBe(200);

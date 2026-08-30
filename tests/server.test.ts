@@ -58,11 +58,13 @@ beforeAll(async () => {
 
   cfgDir = mkdtempSync(join(tmpdir(), "zp-server-"));
   cfgPath = join(cfgDir, "config.json");
+  writeFileSync(join(cfgDir, "index.html"), "<!doctype html><html><body>spa-fallback</body></html>");
   const port = writeConfig([
     { pattern: "/api/*", upstream: `http://localhost:${httpUpstream.port}` },
     { pattern: "/ws/*", upstream: `http://localhost:${wsUpstream.port}`, ws: true },
     { pattern: "/fixed/post", method: "POST", upstream: `http://localhost:${httpUpstream.port}` },
     { pattern: "/static/*", static: cfgDir },
+    { pattern: "/spa/*", static: cfgDir, fallback: "index.html" },
   ]);
 
   child = spawn("bun", ["run", "src/index.ts", "--config", cfgPath], {
@@ -134,6 +136,12 @@ describe("server", () => {
     });
     expect(reply).toBe("ping");
     ws.close();
+  });
+
+  test("serves the SPA fallback for unmatched static paths", async () => {
+    const res = await fetch(`${base}/spa/missing/path`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("spa-fallback");
   });
 
   test("reloads routes when the config file changes", async () => {

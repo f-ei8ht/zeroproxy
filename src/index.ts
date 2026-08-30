@@ -92,17 +92,19 @@ async function handle(req: Request, runtime: Runtime, match: Match | undefined, 
 
   if (runtime.config.compression) {
     const encoding = pickEncoding(req.headers.get("accept-encoding"));
-    const headers = new Headers(response.headers);
-    headers.append("vary", "accept-encoding");
     if (shouldCompress(encoding, response, runtime.config.minCompressBytes)) {
+      const headers = new Headers(response.headers);
       headers.delete("content-length");
       headers.set("content-encoding", encoding);
+      headers.append("vary", "accept-encoding");
       response = new Response(compressBody(response.body!, encoding), {
         status: response.status,
         headers,
       });
     } else {
-      response = new Response(response.body, { status: response.status, headers });
+      // Re-wrapping a file-backed body (a 206 slice) makes Bun.serve send the
+      // whole file, so the response is only rebuilt when the body changes.
+      response.headers.append("vary", "accept-encoding");
     }
   }
   return response;

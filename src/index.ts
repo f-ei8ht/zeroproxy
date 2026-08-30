@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { styleText } from "node:util";
 import { watch } from "node:fs";
-import type { Server, ServerWebSocket } from "bun";
+import type { Server } from "bun";
 import { loadConfig } from "./config";
 import type { Config } from "./config";
 import { allowedMethods, compileRoutes, matchRoute } from "./router";
@@ -15,8 +14,6 @@ import { healthChecker } from "./proxy/health";
 import type { HealthChecker } from "./proxy/health";
 import { isWebSocketRequest, toSendable, upstreamSocketUrl } from "./ws";
 import type { WsClient, WsData } from "./ws";
-
-const SHUTDOWN_TIMEOUT_MS = 10000;
 
 type Runtime = {
   config: Config;
@@ -74,10 +71,14 @@ async function handle(req: Request, runtime: Runtime, match: Match | undefined, 
       response = new Response("Not Found", { status: 404, statusText: "Not Found" });
     }
   } else if (match.route.upstream) {
-    response = await proxyRequest(req, runtime.picks.get(match.route.pattern)!, runtime.config.retryBodyLimitBytes);
+    response = await proxyRequest(req, runtime.picks.get(match.route.pattern)!, {
+      retryBodyLimitBytes: runtime.config.retryBodyLimitBytes,
+      upstreamTimeoutMs: runtime.config.upstreamTimeoutMs,
+      maxRequestBodyBytes: runtime.config.maxRequestBodyBytes,
+    });
   } else if (match.route.static) {
     const subpath = match.params["0"] ?? url.pathname;
-    response = serveStatic(
+    response = await serveStatic(
       req,
       match.route.static,
       match.route.index,
@@ -93,7 +94,7 @@ async function handle(req: Request, runtime: Runtime, match: Match | undefined, 
     const encoding = pickEncoding(req.headers.get("accept-encoding"));
     const headers = new Headers(response.headers);
     headers.append("vary", "accept-encoding");
-    if (shouldCompress(encoding, response)) {
+    if (shouldCompress(encoding, response, runtime.config.minCompressBytes)) {
       headers.delete("content-length");
       headers.set("content-encoding", encoding);
       response = new Response(compressBody(response.body!, encoding), {
@@ -171,8 +172,9 @@ async function main(): Promise<void> {
   const scheme = runtime.config.tls ? "https" : "http";
   console.log(styleText("green", `zeroproxy listening on ${scheme}://${runtime.config.host}:${server.port}`));
 
+  let watcher: ReturnType<typeof watch> | undefined;
   if (source) {
-    watch(source, async () => {
+    watcher = watch(source, async () => {
       try {
         const next = await loadConfig(process.argv.slice(2));
         config = next.config;
@@ -190,15 +192,18 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     runtime.health?.stop();
+    watcher?.close();
     console.log(styleText("yellow", "shutting down, draining in-flight requests"));
     server.stop();
-    setTimeout(() => process.exit(0), SHUTDOWN_TIMEOUT_MS).unref();
+    setTimeout(() => process.exit(0), runtime.config.shutdownTimeoutMs).unref();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }
 
-main().catch((err) => {
-  console.error(styleText("red", `error: ${err instanceof Error ? err.message : err}`));
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(styleText("red", `error: ${err instanceof Error ? err.message : err}`));
+    process.exit(1);
+  });
+}

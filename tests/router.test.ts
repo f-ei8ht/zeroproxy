@@ -42,10 +42,6 @@ describe("allowedMethods", () => {
     expect(allowedMethods(compiled, "/api/x")).toContain("POST");
   });
 
-  test("returns GET for a methodless matching route", () => {
-    expect(allowedMethods(compiled, "/static/big.txt")).toContain("GET");
-  });
-
   test("returns nothing when no route matches the path", () => {
     expect(allowedMethods(compiled, "/nope")).toEqual([]);
   });

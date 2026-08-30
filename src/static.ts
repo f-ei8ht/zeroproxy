@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { extname, join, resolve, sep } from "node:path";
-import { readdirSync, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
+import type { Stats } from "node:fs";
 
 const MIME_TYPES: Record<string, string> = {
   html: "text/html; charset=utf-8",
@@ -47,22 +48,26 @@ function etagFor(file: { size: number; lastModified: number }): string {
   return `"${hash.digest("hex").slice(0, 24)}"`;
 }
 
-function parseRange(header: string, size: number): [number, number] | undefined {
+// A satisfiable single range is [start, end]. "unsatisfiable" means the
+// header is valid but outside the file (416). undefined means the header is
+// not a supported single range (multi-range, malformed, reversed) and must
+// be ignored entirely per RFC 9110.
+function parseRange(header: string, size: number): [number, number] | "unsatisfiable" | undefined {
   const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  if (!m) return undefined;
+  if (!m || (m[1] === "" && m[2] === "")) return undefined;
   const from = m[1]!;
   const to = m[2]!;
   let start: number;
   let end: number;
   if (from === "") {
-    const suffix = to === "" ? size : parseInt(to, 10);
-    start = Math.max(size - suffix, 0);
+    start = Math.max(size - parseInt(to, 10), 0);
     end = size - 1;
   } else {
     start = parseInt(from, 10);
     end = to === "" ? size - 1 : Math.min(parseInt(to, 10), size - 1);
   }
-  if (start > end || start >= size) return undefined;
+  if (start >= size) return "unsatisfiable";
+  if (start > end) return undefined;
   return [start, end];
 }
 
@@ -93,7 +98,7 @@ function baseHeaders(req: Request, file: { size: number; lastModified: number },
   return headers;
 }
 
-function sendFile(req: Request, fsPath: string, cacheControl?: string): Response {
+async function sendFile(req: Request, fsPath: string, cacheControl?: string): Promise<Response> {
   const file = Bun.file(fsPath);
   const etag = etagFor(file);
   const headers = baseHeaders(req, file, cacheControl);
@@ -106,7 +111,11 @@ function sendFile(req: Request, fsPath: string, cacheControl?: string): Response
   const range = req.headers.get("range");
   if (range) {
     const parsed = parseRange(range, file.size);
-    if (parsed) {
+    if (parsed === "unsatisfiable") {
+      headers.set("content-range", `bytes */${file.size}`);
+      return new Response(null, { status: 416, statusText: "Range Not Satisfiable", headers });
+    }
+    if (Array.isArray(parsed)) {
       const [start, end] = parsed;
       headers.set("content-type", contentType);
       headers.set("content-range", `bytes ${start}-${end}/${file.size}`);
@@ -117,8 +126,7 @@ function sendFile(req: Request, fsPath: string, cacheControl?: string): Response
         headers,
       });
     }
-    headers.set("content-range", `bytes */${file.size}`);
-    return new Response(null, { status: 416, statusText: "Range Not Satisfiable", headers });
+    // Not a supported range form: ignore the header and send the full body.
   }
 
   headers.set("content-type", contentType);
@@ -129,8 +137,8 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function dirListing(dirPath: string, relative: string): Response {
-  const entries = readdirSync(dirPath, { withFileTypes: true }).sort(
+async function dirListing(dirPath: string, relative: string): Promise<Response> {
+  const entries = (await readdir(dirPath, { withFileTypes: true })).sort(
     (a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name),
   );
   const baseHref = relative ? `/${relative.replace(/\\/g, "/")}` : "";
@@ -153,16 +161,24 @@ function hasDotSegment(relative: string): boolean {
   return relative.split("/").some((s) => s.startsWith(".") && s.length > 1);
 }
 
-export function serveStatic(
+async function statFile(path: string): Promise<Stats | undefined> {
+  try {
+    return await stat(path);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function serveStatic(
   req: Request,
   staticPath: string,
   indexFile?: string,
   subpath = "",
   fallbackFile?: string,
   cacheControl?: string,
-): Response {
+): Promise<Response> {
   const base = resolve(staticPath);
-  const baseStat = statSync(base, { throwIfNoEntry: false });
+  const baseStat = await statFile(base);
   if (!baseStat) return notFound();
 
   if (!baseStat.isDirectory()) return sendFile(req, base, cacheControl);
@@ -173,19 +189,21 @@ export function serveStatic(
   if (hasDotSegment(relative)) return notFound();
 
   const indexName = (indexFile?.split(sep).pop() ?? DEFAULT_INDEX)!;
-  const indexFallback = () => {
+  const indexFallback = async (): Promise<Response> => {
     const path = join(base, fallbackFile!);
-    return statSync(path, { throwIfNoEntry: false })?.isFile() ? sendFile(req, path, cacheControl) : notFound();
+    const s = await statFile(path);
+    return s?.isFile() ? sendFile(req, path, cacheControl) : notFound();
   };
 
-  const stat = statSync(candidate, { throwIfNoEntry: false });
-  if (stat?.isDirectory()) {
+  const fileStat = await statFile(candidate);
+  if (fileStat?.isDirectory()) {
     const indexPath = join(candidate, indexName);
-    if (statSync(indexPath, { throwIfNoEntry: false })?.isFile()) return sendFile(req, indexPath, cacheControl);
+    const idx = await statFile(indexPath);
+    if (idx?.isFile()) return sendFile(req, indexPath, cacheControl);
     if (fallbackFile) return indexFallback();
     return dirListing(candidate, relative);
   }
-  if (stat?.isFile()) return sendFile(req, candidate, cacheControl);
+  if (fileStat?.isFile()) return sendFile(req, candidate, cacheControl);
   if (fallbackFile) return indexFallback();
   return notFound();
 }

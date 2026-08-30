@@ -8,6 +8,10 @@ describe("validateConfig", () => {
     expect(config.host).toBe("0.0.0.0");
     expect(config.compression).toBe(true);
     expect(config.retryBodyLimitBytes).toBe(65536);
+    expect(config.upstreamTimeoutMs).toBe(30000);
+    expect(config.shutdownTimeoutMs).toBe(10000);
+    expect(config.minCompressBytes).toBe(256);
+    expect(config.maxRequestBodyBytes).toBe(0);
     expect(config.healthCheck.intervalMs).toBe(5000);
     expect(config.routes).toEqual([]);
     expect(config.tls).toBeUndefined();
@@ -44,6 +48,26 @@ describe("validateConfig", () => {
   test("rejects an invalid port", () => {
     expect(() => validateConfig({ port: 70000 })).toThrow();
     expect(() => validateConfig({ port: 0 })).toThrow();
+  });
+
+  test("parses the tuning keys", () => {
+    const config = validateConfig({
+      upstreamTimeoutMs: 1234,
+      shutdownTimeoutMs: 2500,
+      minCompressBytes: 512,
+      maxRequestBodyBytes: 1048576,
+    });
+    expect(config.upstreamTimeoutMs).toBe(1234);
+    expect(config.shutdownTimeoutMs).toBe(2500);
+    expect(config.minCompressBytes).toBe(512);
+    expect(config.maxRequestBodyBytes).toBe(1048576);
+  });
+
+  test("rejects invalid tuning values", () => {
+    expect(() => validateConfig({ upstreamTimeoutMs: 0 })).toThrow();
+    expect(() => validateConfig({ shutdownTimeoutMs: -1 })).toThrow();
+    expect(() => validateConfig({ minCompressBytes: -1 })).toThrow();
+    expect(() => validateConfig({ maxRequestBodyBytes: -1 })).toThrow();
   });
 
   test("rejects a route with neither upstream nor static", () => {

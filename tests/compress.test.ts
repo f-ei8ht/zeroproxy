@@ -46,35 +46,53 @@ describe("pickEncoding", () => {
   test("uses zstd for a wildcard header", () => {
     expect(pickEncoding("*")).toBe("zstd");
   });
+
+  test("honors a q=0 exclusion", () => {
+    expect(pickEncoding("gzip;q=0, deflate")).toBe("deflate");
+  });
+
+  test("lets the wildcard cover an excluded encoding", () => {
+    expect(pickEncoding("gzip;q=0, *;q=1")).toBe("zstd");
+  });
+
+  test("prefers the highest quality over server preference", () => {
+    expect(pickEncoding("gzip;q=1, br;q=0.1")).toBe("gzip");
+  });
 });
 
 describe("shouldCompress", () => {
   test("is false for identity", () => {
-    expect(shouldCompress("identity", new Response("x"))).toBe(false);
+    expect(shouldCompress("identity", new Response("x"), 256)).toBe(false);
   });
 
   test("is false when the response is already encoded", () => {
     const res = new Response("x", { headers: { "content-encoding": "gzip" } });
-    expect(shouldCompress("gzip", res)).toBe(false);
+    expect(shouldCompress("gzip", res, 256)).toBe(false);
   });
 
   test("is false for image content", () => {
     const res = new Response("x".repeat(500), { headers: { "content-type": "image/png" } });
-    expect(shouldCompress("gzip", res)).toBe(false);
+    expect(shouldCompress("gzip", res, 256)).toBe(false);
   });
 
   test("is false for video and font content", () => {
-    expect(shouldCompress("gzip", new Response("x".repeat(500), { headers: { "content-type": "video/mp4" } }))).toBe(false);
-    expect(shouldCompress("gzip", new Response("x".repeat(500), { headers: { "content-type": "font/woff2" } }))).toBe(false);
+    expect(shouldCompress("gzip", new Response("x".repeat(500), { headers: { "content-type": "video/mp4" } }), 256)).toBe(false);
+    expect(shouldCompress("gzip", new Response("x".repeat(500), { headers: { "content-type": "font/woff2" } }), 256)).toBe(false);
   });
 
   test("is false for tiny responses", () => {
     const res = new Response("hello", { headers: { "content-length": "5" } });
-    expect(shouldCompress("gzip", res)).toBe(false);
+    expect(shouldCompress("gzip", res, 256)).toBe(false);
+  });
+
+  test("honors a configured minimum size", () => {
+    const res = new Response("x".repeat(100), { headers: { "content-length": "100" } });
+    expect(shouldCompress("gzip", res, 50)).toBe(true);
+    expect(shouldCompress("gzip", res, 256)).toBe(false);
   });
 
   test("is true for compressible text above the minimum size", () => {
-    expect(shouldCompress("gzip", new Response("x".repeat(1000)))).toBe(true);
+    expect(shouldCompress("gzip", new Response("x".repeat(1000)), 256)).toBe(true);
   });
 });
 

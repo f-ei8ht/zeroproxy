@@ -12,13 +12,33 @@ const FORMATS: Record<Exclude<Encoding, "identity">, string> = {
 // Content types that are already compressed or carry no benefit from gzip.
 const NO_BENEFIT_TYPES = ["image/", "video/", "audio/", "font/"];
 
+// Parses Accept-Encoding with q-values: an encoding excluded with q=0 is
+// never chosen, the wildcard covers unlisted encodings, and the highest
+// supported q wins with server preference breaking ties.
 export function pickEncoding(acceptEncoding: string | null): Encoding {
   if (!acceptEncoding) return "identity";
-  for (const encoding of PREFERRED) {
-    if (acceptEncoding.includes(encoding)) return encoding;
+  const weights = new Map<string, number>();
+  for (const part of acceptEncoding.split(",")) {
+    const [rawName, ...params] = part.trim().split(";");
+    if (!rawName) continue;
+    let q = 1;
+    for (const param of params) {
+      const [key, value] = param.trim().split("=");
+      if (key === "q") q = Number(value) || 0;
+    }
+    weights.set(rawName.trim().toLowerCase(), q);
   }
-  if (acceptEncoding.includes("*")) return PREFERRED[0]!;
-  return "identity";
+  const wildcard = weights.get("*") ?? 0;
+  let chosen: Encoding | undefined;
+  let chosenQ = 0;
+  for (const encoding of PREFERRED) {
+    const q = weights.has(encoding) ? weights.get(encoding)! : wildcard;
+    if (q > 0 && q > chosenQ) {
+      chosen = encoding;
+      chosenQ = q;
+    }
+  }
+  return chosen ?? "identity";
 }
 
 export function compressBody(body: ReadableStream<Uint8Array>, encoding: Encoding): ReadableStream<Uint8Array> {
@@ -27,15 +47,12 @@ export function compressBody(body: ReadableStream<Uint8Array>, encoding: Encodin
   return body.pipeThrough(stream as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
 }
 
-// Responses under this size are not worth compressing.
-const MIN_COMPRESS_BYTES = 256;
-
-export function shouldCompress(encoding: Encoding, res: Response): boolean {
+export function shouldCompress(encoding: Encoding, res: Response, minBytes: number): boolean {
   if (encoding === "identity") return false;
   if (res.headers.get("content-encoding")) return false;
   const type = res.headers.get("content-type") ?? "";
   if (NO_BENEFIT_TYPES.some((prefix) => type.startsWith(prefix))) return false;
   const length = Number(res.headers.get("content-length") ?? "0");
-  if (length > 0 && length < MIN_COMPRESS_BYTES) return false;
+  if (length > 0 && length < minBytes) return false;
   return true;
 }

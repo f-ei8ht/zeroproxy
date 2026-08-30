@@ -84,6 +84,13 @@ before `server.stop()`.
 When an upstream is down, the request is retried on the next healthy target. A body
 at or below `retryBodyLimitBytes` (or no body at all) is buffered so it can be
 replayed; a larger body is sent once, because a consumed stream cannot be sent twice.
+Unknown-length (chunked) bodies are read up to the replay limit and replayed if they
+end within it; beyond it, the already-read bytes are spliced onto the unread tail and
+the body is sent once, so memory stays bounded. A timed-out attempt is retried only
+when the method is idempotent (GET/HEAD/PUT/DELETE/OPTIONS/TRACE): a timeout does not
+prove the request was not delivered, and replaying a POST that was already applied
+would duplicate it. Connection failures, where nothing was delivered, are retried for
+every method.
 
 ```mermaid
 sequenceDiagram
@@ -215,7 +222,12 @@ Top-level keys:
 - `port`, `host` - bind address.
 - `compression` - toggle `Accept-Encoding` negotiation (default true).
 - `retryBodyLimitBytes` - bodies up to this size (default 64 KB) are buffered so failover can
-  replay them; larger/streaming bodies are sent once.
+  replay them; larger/streaming bodies are sent once. Unknown-length (chunked) bodies are
+  read up to this limit and streamed beyond it, never buffered whole.
+- `upstreamTimeoutMs` - per-attempt upstream timeout (default 30000); a timeout surfaces as 504.
+- `shutdownTimeoutMs` - cap on graceful drain before exit (default 10000).
+- `minCompressBytes` - responses smaller than this (default 256) skip compression.
+- `maxRequestBodyBytes` - larger request bodies are rejected with 413 (default 0, unlimited).
 - `healthCheck` - `{ intervalMs, timeoutMs, path }`; dead upstreams are probed periodically
   and removed from rotation until they recover.
 - `tls` - `{ cert, key }` paths to serve HTTPS.
@@ -225,7 +237,7 @@ file; `ZEROPROXY_PORT` / `ZEROPROXY_HOST` env vars are fallbacks. `--upstream` a
 catch-all proxy route on top of any file routes.
 
 A `GET /healthz` endpoint is served on every run, reporting `status`, `uptime`, and
-in-flight `requests`/`errors` counters. When a config file is used, it is watched and
+cumulative `requests`/`errors` counters. When a config file is used, it is watched and
 routes reload live on change (port and host are fixed for the process lifetime).
 
 ## Features
@@ -233,18 +245,22 @@ routes reload live on change (port and host are fixed for the process lifetime).
 - **Routing** - `URLPattern`-based matching: wildcards (`/api/*`) and named params (`/users/:id`);
   returns `405 Method Not Allowed` with an `Allow` header when the path matches but the method
   does not.
-- **Reverse proxying** - streams response bodies via `fetch()` without buffering the whole
-  payload in memory; weighted round-robin across multiple upstreams.
+- **Reverse proxying** - streams request and response bodies via `fetch()` without buffering
+  the whole payload in memory; weighted round-robin across multiple upstreams; hop-by-hop
+  headers stripped and `Via` appended per RFC 9110; oversized bodies rejected with 413.
 - **Health checks** - dead upstreams are probed every `intervalMs` and removed from rotation
   until they recover.
-- **Failover with body replay** - a request body up to `retryBodyLimitBytes` is buffered so a
-  failed attempt is retried on the next upstream (GET/HEAD fail over regardless).
+- **Failover with body replay** - a request body up to `retryBodyLimitBytes` (declared or
+  unknown-length) is buffered so a failed attempt is retried on the next upstream; a timed-out
+  attempt is retried only for idempotent methods, so a delivered request is never applied
+  twice.
 - **WebSocket proxying** - native `Bun.serve` upgrade tunnels to an upstream picked by the
   balancer, via the global `WebSocket` client; frames pipe both ways with no `ws` package.
 - **Static serving** - correct `Content-Type` by extension, `ETag`/`Last-Modified` caching,
   `Range`-header partial content (206), `Cache-Control`, directory listings with `../`,
   dotfiles blocked, and SPA `fallback`.
-- **Compression** - negotiates `Accept-Encoding` and gzip/deflate/brotli/zstd-compresses
+- **Compression** - negotiates `Accept-Encoding` with q-values (an encoding excluded with
+  `q=0` is never chosen) and gzip/deflate/brotli/zstd-compresses
   text responses (skips already-compressed image/video/audio/font and tiny payloads) using
   native `CompressionStream`, with `Vary: Accept-Encoding` set for cache correctness.
 - **TLS** - serve HTTPS via the `tls` config (cert/key paths).
@@ -270,7 +286,11 @@ balancer) is the intended path beyond that and is out of scope for this submissi
 - No certificate issuance - TLS is supported via the `tls` config, but you bring the cert.
 - Body failover is bounded - a body larger than `retryBodyLimitBytes` is sent once and not
   replayed, because a consumed stream cannot be sent twice - the same trade-off real proxies
-  make.
+  make. A timed-out attempt is never retried for non-idempotent methods.
+- Single ranges only - a multi-range `Range` header is ignored and the full body is sent
+  (RFC 9110 allows ignoring unsupported range forms) instead of 206 multipart/byteranges.
+- `X-Forwarded-For` is not set - Bun's `fetch` handler does not expose the client address; a
+  value set by a front proxy is forwarded untouched.
 - A live WebSocket is not reconnected if its upstream dies mid-connection; only the initial
   target is load-balanced.
 - Not compared against nginx/Caddy for raw throughput; see the benchmark below for honest
@@ -285,13 +305,14 @@ Ryzen 5 7535U, 12 threads, Manjaro Linux, Bun 1.4):
 
 | Metric | Value |
 |---|---|
-| Throughput | ~5,580 req/s |
-| p50 latency | ~5 ms |
-| p90 latency | ~9 ms |
-| p99 latency | ~12 ms |
+| Throughput | ~4,900 req/s |
+| p50 latency | ~6 ms |
+| p90 latency | ~8 ms |
+| p99 latency | ~13 ms |
 
 These are single-process, single-core results on one laptop; scaling is horizontal (multiple
-processes behind a load balancer).
+processes behind a load balancer). Static serving uses async fs calls throughout, so the
+event loop never blocks on disk - at a modest throughput cost versus synchronous stat.
 
 ## Zero-dependency compliance
 
@@ -320,11 +341,15 @@ processes behind a load balancer).
 bun test
 ```
 
-Covers route matching (wildcard/param edge cases and 405 `Allow`), proxy streaming, weighted
-and health-aware failover (including small-body replay), WebSocket request detection and URL
-mapping, static MIME / `Range` / `ETag` / `Last-Modified` / dotfile / `Cache-Control` behavior,
-directory listings and SPA fallback, config validation, upstream health checks, and
-compression negotiation. Tests use `bun:test`, a built-in - no test framework dependency.
+Covers route matching (wildcard/param edge cases and 405 `Allow`), proxy streaming, hop-by-hop
+stripping and `Via`, weighted and health-aware failover (small-body replay, unknown-length
+bodies, the idempotent timeout rule, 413 caps), WebSocket request detection, URL mapping, and
+a live tunnel, static MIME / `Range` (single, suffix, multi-range, malformed) / `ETag` /
+`Last-Modified` / dotfile / `Cache-Control` behavior, directory listings and SPA fallback,
+config validation, upstream health checks, and compression negotiation with q-values. An
+integration suite boots the real server and exercises `/healthz`, proxying, 405, static
+serving, the WebSocket tunnel, live config reload, and `SIGTERM` shutdown. Tests use
+`bun:test`, a built-in - no test framework dependency.
 
 ## References
 

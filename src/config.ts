@@ -25,15 +25,33 @@ export type Config = {
   host: string;
   compression: boolean;
   retryBodyLimitBytes: number;
+  upstreamTimeoutMs: number;
+  shutdownTimeoutMs: number;
+  minCompressBytes: number;
+  maxRequestBodyBytes: number;
   healthCheck: HealthCheckConfig;
   tls?: { cert: string; key: string };
   routes: Route[];
 };
 
 const isUrl = (v: string) => /^https?:\/\//.test(v);
+
+function numberAtLeast(raw: unknown, fallback: number, min: number, name: string): number {
+  const value = raw ?? fallback;
+  if (typeof value !== "number" || value < min) {
+    throw new Error(`${name} must be a number of at least ${min}`);
+  }
+  return value;
+}
+
 const DEFAULT_PORT = 8080;
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_RETRY_BODY_LIMIT = 64 * 1024;
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 30000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10000;
+const DEFAULT_MIN_COMPRESS_BYTES = 256;
+// 0 disables the cap; a declared body over the cap is rejected with 413.
+const DEFAULT_MAX_REQUEST_BODY_BYTES = 0;
 const DEFAULT_HEALTH: HealthCheckConfig = { intervalMs: 5000, timeoutMs: 2000, path: "/" };
 
 function parseUpstream(raw: unknown, i: number): Upstream {
@@ -123,10 +141,16 @@ export function validateConfig(raw: unknown): Config {
   if (typeof host !== "string") throw new Error("host must be a string");
   const compression = obj.compression ?? true;
   if (typeof compression !== "boolean") throw new Error("compression must be a boolean");
-  const retryBodyLimitBytes = obj.retryBodyLimitBytes ?? DEFAULT_RETRY_BODY_LIMIT;
-  if (typeof retryBodyLimitBytes !== "number" || retryBodyLimitBytes < 0) {
-    throw new Error("retryBodyLimitBytes must be a non-negative number");
-  }
+  const retryBodyLimitBytes = numberAtLeast(obj.retryBodyLimitBytes, DEFAULT_RETRY_BODY_LIMIT, 0, "retryBodyLimitBytes");
+  const upstreamTimeoutMs = numberAtLeast(obj.upstreamTimeoutMs, DEFAULT_UPSTREAM_TIMEOUT_MS, 1, "upstreamTimeoutMs");
+  const shutdownTimeoutMs = numberAtLeast(obj.shutdownTimeoutMs, DEFAULT_SHUTDOWN_TIMEOUT_MS, 1, "shutdownTimeoutMs");
+  const minCompressBytes = numberAtLeast(obj.minCompressBytes, DEFAULT_MIN_COMPRESS_BYTES, 0, "minCompressBytes");
+  const maxRequestBodyBytes = numberAtLeast(
+    obj.maxRequestBodyBytes,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
+    0,
+    "maxRequestBodyBytes",
+  );
   let tls: Config["tls"];
   if (obj.tls !== undefined) {
     const t = obj.tls as Record<string, unknown>;
@@ -140,6 +164,10 @@ export function validateConfig(raw: unknown): Config {
     host,
     compression,
     retryBodyLimitBytes,
+    upstreamTimeoutMs,
+    shutdownTimeoutMs,
+    minCompressBytes,
+    maxRequestBodyBytes,
     healthCheck: parseHealthCheck(obj.healthCheck),
     tls,
     routes: parseRoutes(obj.routes ?? []),
@@ -173,17 +201,19 @@ export async function loadConfig(args: string[]): Promise<LoadedConfig> {
       host: DEFAULT_HOST,
       compression: true,
       retryBodyLimitBytes: DEFAULT_RETRY_BODY_LIMIT,
+      upstreamTimeoutMs: DEFAULT_UPSTREAM_TIMEOUT_MS,
+      shutdownTimeoutMs: DEFAULT_SHUTDOWN_TIMEOUT_MS,
+      minCompressBytes: DEFAULT_MIN_COMPRESS_BYTES,
+      maxRequestBodyBytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
       healthCheck: DEFAULT_HEALTH,
       routes: upstream.length > 0 ? [{ pattern: "/*", upstream }] : [],
     };
   }
 
   const root = values.root ? resolve(values.root) : process.cwd();
-  config.routes = config.routes.map((route) => {
-    const resolved = route.static ? { ...route, static: resolve(root, route.static) } : route;
-    if (resolved.static && resolved.cacheControl) return resolved;
-    return resolved;
-  });
+  config.routes = config.routes.map((route) =>
+    route.static ? { ...route, static: resolve(root, route.static) } : route,
+  );
 
   if (values.port) {
     const port = Number(values.port);

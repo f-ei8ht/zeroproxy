@@ -7,6 +7,8 @@ runtime built-ins - `"dependencies": {}`. No npm installs, no packages, nothing 
 **Runtime:** Bun 1.4+
 **Dependencies:** zero
 
+**Demo video:** [youtube.com/watch?v=ugBxX1BZD70](https://www.youtube.com/watch?v=ugBxX1BZD70)
+
 ---
 
 ## What it does

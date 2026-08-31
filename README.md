@@ -149,6 +149,40 @@ negotiation. `bench/bench.ts` is a zero-dependency load test. `demo/` is the liv
 demo package: two mock upstreams, a zero-dependency dashboard page, and a
 one-command runner.
 
+## Installation
+
+`zeroproxy` needs two things on the machine: **Bun** to run/build it, and **Make** if you
+prefer the `make <task>` commands (Bun alone is enough - every task also works via
+`bun run <task>`).
+
+### Install Bun
+
+On macOS and Linux, install with the official installer:
+
+```bash
+curl -fsSL https://bun.com/install | bash
+```
+
+Or, if you already have Node, install Bun as a global package:
+
+```bash
+npm install -g bun
+```
+
+See the full docs at [bun.com/docs/installation](https://bun.com/docs/installation).
+
+### Install Make
+
+GNU Make ships preinstalled on most Linux and macOS systems. If it is missing, follow the
+installation guide for your OS at [shellrag.com/tutorials/makefile/installation](https://shellrag.com/tutorials/makefile/installation).
+
+Verify both are available:
+
+```bash
+bun --version
+make --version
+```
+
 ## Quick start
 
 One command builds (choose either):
